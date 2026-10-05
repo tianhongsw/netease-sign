@@ -225,8 +225,8 @@ async function claimRewards() {
   }
 }
 
-// ── Bark 通知 ──────────────────────────────────────────
-async function sendBark() {
+// ── Bark 失败通知发送 ──────────────────────────────────
+async function sendBarkFailureNotification(customError = null) {
   if (!BARK_KEY) {
     log("Bark", "未配置 BARK_KEY 或 BARK_URL，跳过发送通知");
     return;
@@ -237,25 +237,27 @@ async function sendBark() {
   const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
   const weekDay = weekdays[now.getDay()];
 
-  const cloudLine = state.cloud.ok
-    ? `${state.cloud.shells > 0 ? `🎁 ${state.cloud.text} · 今日 +${state.cloud.shells} 云贝` : state.cloud.text}`
-    : state.cloud.text;
+  let lines = [`📅 ${dateStr} 星期${weekDay}`, ``];
 
-  const lines = [
-    `📅 ${dateStr} 星期${weekDay}`,
-    ``,
-    `☁️ 云贝签到：${state.cloud.ok ? "✅" : "❌"} ${cloudLine}`,
-  ];
-
-  if (state.vipLevel) {
-    lines.push(
-      ``,
-      `👑 VIP会员：${state.vipLevel} (成长值 ${state.vipGrowth})`,
-      `${state.vipSign.ok ? "✅" : "❌"} VIP签到：${state.vipSign.ok ? "成功" : state.vipSign.text}`,
-      `${state.vipReward.ok ? "🎁" : "❌"} 成长值：${state.vipReward.text}`
-    );
+  if (customError) {
+    lines.push(`🚨 **脚本运行报错**：${customError}`);
   } else {
-    lines.push(``, `👑 VIP会员：❌ 非会员或查询失败`);
+    const cloudLine = state.cloud.ok
+      ? `${state.cloud.shells > 0 ? `🎁 ${state.cloud.text} · 今日 +${state.cloud.shells} 云贝` : state.cloud.text}`
+      : state.cloud.text;
+
+    lines.push(`☁️ 云贝签到：${state.cloud.ok ? "✅" : "❌"} ${cloudLine}`);
+
+    if (state.vipLevel) {
+      lines.push(
+        ``,
+        `👑 VIP会员：${state.vipLevel} (成长值 ${state.vipGrowth})`,
+        `${state.vipSign.ok ? "✅" : "❌"} VIP签到：${state.vipSign.ok ? "成功" : state.vipSign.text}`,
+        `${state.vipReward.ok ? "🎁" : "❌"} 成长值：${state.vipReward.text}`
+      );
+    } else {
+      lines.push(``, `👑 VIP会员：❌ 非会员或查询失败`);
+    }
   }
 
   let targetUrl = BARK_KEY.trim();
@@ -268,7 +270,7 @@ async function sendBark() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        title: `🎵 网易云音乐签到`,
+        title: `⚠️ 网易云音乐签到失败`,
         body: lines.join("\n"),
         group: "网易云签到",
         icon: "https://music.163.com/favicon.ico",
@@ -276,7 +278,7 @@ async function sendBark() {
     });
     const data = await res.json();
     if (data.code === 200) {
-      log("Bark", "通知发送成功");
+      log("Bark", "失败通知发送成功");
     } else {
       log("Bark", `发送失败 code=${data.code} msg=${data.message || ""}`);
     }
@@ -297,6 +299,7 @@ async function main() {
   await cloudSignIn();
   await getTodayShells();
 
+  let vipQueryFailed = false;
   const vipInfo = await getVipInfo();
   if (vipInfo) {
     const ul = vipInfo.userLevel;
@@ -312,13 +315,26 @@ async function main() {
       state.vipReward = { ok: true, text: "-" };
     }
   } else {
+    vipQueryFailed = true;
     log("VIP", "查询失败或非会员");
   }
 
-  await sendBark();
+  // 判定是否有失败项
+  const hasError =
+    !state.cloud.ok ||
+    vipQueryFailed ||
+    (state.vipLevel && (!state.vipSign.ok || !state.vipReward.ok));
+
+  if (hasError) {
+    log("Bark", "检测到签到失败或查询异常，发送 Bark 通知...");
+    await sendBarkFailureNotification();
+  } else {
+    log("Bark", "所有任务执行顺利，无需触发推送。");
+  }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("错误:", err.message);
+  await sendBarkFailureNotification(err.message);
   process.exit(1);
 });
